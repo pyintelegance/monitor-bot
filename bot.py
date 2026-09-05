@@ -24,15 +24,25 @@ ADMIN = config.ADMIN_ID
 def load_sent():
     if DATA_FILE.exists():
         try:
-            return set(json.loads(DATA_FILE.read_text(encoding="utf-8")))
+            data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
+            # поддержка старого формата list и нового dict с meta
+            if isinstance(data, dict) and "ids" in data:
+                return set(data["ids"])
+            if isinstance(data, list):
+                return set(data)
+            return set()
         except:
             return set()
     return set()
 
 def save_sent(s):
-    DATA_FILE.write_text(json.dumps(list(s), ensure_ascii=False), encoding="utf-8")
+    # храним с меткой времени для диагностики рестартов
+    payload = {"ids": sorted(list(s)), "updated": datetime.now().isoformat()}
+    DATA_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 sent_ids = load_sent()
+# флаг первого запуска после сброса файла (Render ephemeral fix)
+_first_boot = len(sent_ids) == 0
 offset = 0
 
 TPL_TEXT = (
@@ -92,11 +102,11 @@ async def handle_updates():
                 if text.startswith("/start") or text.startswith("/help"):
                     await send_msg(WELCOME)
                 elif text.startswith("/stats"):
-                    await send_msg(f"Sent: <b>{len(sent_ids)}</b>")
+                    await send_msg(f"Sent: <b>{len(sent_ids)}</b> | first_boot={'yes' if _first_boot else 'no'}")
                 elif text.startswith("/check"):
                     await send_msg("Checking...")
                     n = await scan_and_send(force=True)
-                    await send_msg(f"Done, new: {n}")
+                    await send_msg(f"Done, new: {n} | total: {len(sent_ids)}")
                 elif text.startswith("/test"):
                     await send_msg("Test - bot works! Next check in 10 min.", kb_for("https://teamwork.uz/tasks"))
                 # ignore other
@@ -105,8 +115,28 @@ async def handle_updates():
             await asyncio.sleep(5)
 
 async def scan_and_send(force=False):
-    global sent_ids
+    global sent_ids, _first_boot
     items = await fetch_all()
+
+    # FIX для Render ephemeral: если файл стерся (sent_ids пуст) —
+    # первый скан НЕ шлет ничего, а просто запоминает все найденное как "виденное"
+    # иначе после каждого рестарта будут дубли
+    if not force and _first_boot and len(sent_ids) == 0 and len(items) > 0:
+        for it in items:
+            sent_ids.add(it["id"])
+        save_sent(sent_ids)
+        _first_boot = False
+        print(f"[dedup] first boot - silently memorized {len(items)} ids, not sending")
+        # уведомим админа один раз
+        try:
+            await send_msg(f"♻️ Бот перезапущен — запомнил <b>{len(items)}</b> существующих заказов как просмотренные. Новые заказы буду слать как обычно.")
+        except: pass
+        return 0
+
+    # если когда-то уже был хотя бы один id, снимаем флаг
+    if _first_boot and len(sent_ids) > 0:
+        _first_boot = False
+
     new = 0
     for it in items:
         if not force and it["id"] in sent_ids:

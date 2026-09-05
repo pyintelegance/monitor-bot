@@ -6,26 +6,20 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# fix cp1251 on Windows
 if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8')
     except: pass
 
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import CommandStart, Command
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
-
+import aiohttp
 import config
 from parser import fetch_all
 
 DATA_FILE = Path("data/sent.json")
 DATA_FILE.parent.mkdir(exist_ok=True)
 
-bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
+API = f"https://api.telegram.org/bot{config.BOT_TOKEN}"
+ADMIN = config.ADMIN_ID
 
 def load_sent():
     if DATA_FILE.exists():
@@ -39,23 +33,7 @@ def save_sent(s):
     DATA_FILE.write_text(json.dumps(list(s), ensure_ascii=False), encoding="utf-8")
 
 sent_ids = load_sent()
-
-def make_kb(url):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Open order", url=url)],
-        [InlineKeyboardButton(text="Template", callback_data="tpl")]
-    ])
-
-WELCOME = (
-    "<b>Jahongir Monitor</b> - 24/7 freelance watcher\n\n"
-    "Sources: t.me/teamwork_uz + teamwork.uz + dowork.uz\n"
-    "Filter: sayt, landing, bot, python, aiogram\n"
-    f"Interval: {config.CHECK_INTERVAL//60} min\n\n"
-    "Commands:\n"
-    "/check - check now\n"
-    "/stats - stats\n"
-    "/test - test message"
-)
+offset = 0
 
 TPL_TEXT = (
     "Salom! Men Jahongir - landing + Telegram botlar (aiogram + PostgreSQL).\n"
@@ -64,38 +42,67 @@ TPL_TEXT = (
     "Aloqa: @jahongir_lab"
 )
 
-@dp.message(CommandStart())
-async def start(m: Message):
-    if m.from_user.id != config.ADMIN_ID:
-        await m.answer("Access denied")
-        return
-    await m.answer(WELCOME)
+WELCOME = (
+    "<b>Jahongir Monitor</b> - 24/7 freelance watcher\n\n"
+    "Sources: t.me/teamwork_uz + teamwork.uz + dowork.uz\n"
+    "Filter: sayt, landing, bot, python\n"
+    f"Interval: {config.CHECK_INTERVAL//60} min\n\n"
+    "Commands:\n"
+    "/check - check now\n"
+    "/stats - stats\n"
+    "/test - test"
+)
 
-@dp.message(Command("help"))
-async def help_cmd(m: Message):
-    await m.answer(WELCOME)
+async def tg_call(method, data=None):
+    async with aiohttp.ClientSession() as s:
+        url = f"{API}/{method}"
+        async with s.post(url, json=data) as r:
+            return await r.json()
 
-@dp.message(Command("stats"))
-async def stats(m: Message):
-    await m.answer(f"Sent: <b>{len(sent_ids)}</b>\nFile: {DATA_FILE}")
+async def send_msg(text, kb=None):
+    payload = {"chat_id": ADMIN, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    if kb:
+        payload["reply_markup"] = kb
+    await tg_call("sendMessage", payload)
 
-@dp.message(Command("check"))
-async def check_now(m: Message):
-    if m.from_user.id != config.ADMIN_ID:
-        return
-    await m.answer("Checking...")
-    n = await scan_and_send(force=True)
-    await m.answer(f"Done, new: {n}")
+def kb_for(url):
+    return {"inline_keyboard": [[{"text": "Open order", "url": url}], [{"text": "Template", "callback_data": "tpl"}]]}
 
-@dp.message(Command("test"))
-async def test(m: Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Open", url="https://teamwork.uz/tasks")]])
-    await bot.send_message(config.ADMIN_ID, "Test - bot works! Next check in 10 min.", reply_markup=kb)
-
-@dp.callback_query(F.data == "tpl")
-async def tpl_cb(cb):
-    await cb.answer()
-    await cb.message.answer(f"<code>{TPL_TEXT}</code>")
+async def handle_updates():
+    global offset
+    while True:
+        try:
+            data = await tg_call("getUpdates", {"offset": offset, "timeout": 25, "allowed_updates": ["message","callback_query"]})
+            if not data.get("ok") or not data.get("result"):
+                await asyncio.sleep(2)
+                continue
+            for upd in data["result"]:
+                offset = upd["update_id"] + 1
+                msg = upd.get("message")
+                cb = upd.get("callback_query")
+                if cb and cb.get("data") == "tpl":
+                    await tg_call("answerCallbackQuery", {"callback_query_id": cb["id"]})
+                    await tg_call("sendMessage", {"chat_id": ADMIN, "text": TPL_TEXT})
+                    continue
+                if not msg:
+                    continue
+                if msg.get("from",{}).get("id") != ADMIN:
+                    continue
+                text = msg.get("text","").strip()
+                if text.startswith("/start") or text.startswith("/help"):
+                    await send_msg(WELCOME)
+                elif text.startswith("/stats"):
+                    await send_msg(f"Sent: <b>{len(sent_ids)}</b>")
+                elif text.startswith("/check"):
+                    await send_msg("Checking...")
+                    n = await scan_and_send(force=True)
+                    await send_msg(f"Done, new: {n}")
+                elif text.startswith("/test"):
+                    await send_msg("Test - bot works! Next check in 10 min.", kb_for("https://teamwork.uz/tasks"))
+                # ignore other
+        except Exception as e:
+            print(f"[poll] {e}")
+            await asyncio.sleep(5)
 
 async def scan_and_send(force=False):
     global sent_ids
@@ -112,14 +119,13 @@ async def scan_and_send(force=False):
             f"{it['url']}"
         )
         try:
-            kb = make_kb(it["url"])
-            await bot.send_message(config.ADMIN_ID, text, reply_markup=kb)
+            await send_msg(text, kb_for(it["url"]))
             sent_ids.add(it["id"])
             save_sent(sent_ids)
             new += 1
             await asyncio.sleep(0.8)
         except Exception as e:
-            print(f"send error {e}")
+            print(f"send {e}")
         if new >= 5 and not force:
             break
     return new
@@ -132,7 +138,7 @@ async def scheduler():
             n = await scan_and_send(force=False)
             print(f"[{datetime.now().strftime('%H:%M:%S')}] scan new={n} total={len(sent_ids)}")
         except Exception as e:
-            print(f"[scheduler] {e}")
+            print(f"[sched] {e}")
         await asyncio.sleep(config.CHECK_INTERVAL)
 
 async def health_server():
@@ -152,7 +158,7 @@ async def health_server():
 
 async def main():
     await asyncio.gather(
-        dp.start_polling(bot),
+        handle_updates(),
         scheduler(),
         health_server()
     )

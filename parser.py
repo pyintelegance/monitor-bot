@@ -23,7 +23,7 @@ async def fetch_teamwork_channel():
         async with aiohttp.ClientSession(headers=HEADERS) as s:
             async with s.get(url, timeout=20) as r:
                 html = await r.text()
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         # каждый пост — tg-widget
         msgs = soup.select("div.tgme_widget_message")
         for m in msgs[-20:]:  # последние 20
@@ -76,7 +76,7 @@ async def fetch_dowork_projects():
         async with aiohttp.ClientSession(headers=HEADERS) as s:
             async with s.get("https://dowork.uz/uz/projects", timeout=20) as r:
                 html = await r.text()
-        soup = BeautifulSoup(html, "lxml")
+        soup = BeautifulSoup(html, "html.parser")
         # проекты — ссылки вида /uz/projects/...
         for a in soup.select('a[href*="/uz/projects/"]'):
             href = a.get("href", "")

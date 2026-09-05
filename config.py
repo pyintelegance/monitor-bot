@@ -22,6 +22,9 @@ IGNORE_KEYWORDS = [
     "play market"
 ]
 
+# не слать заказы старше N часов (защита от вечных повторов старых Buyurtma из t.me/s)
+MAX_AGE_HOURS = int(os.getenv("MAX_AGE_HOURS", "48"))
+
 TEAMWORK_CHANNEL_URL = "https://t.me/s/teamwork_uz"
 TEAMWORK_TASKS_URL = "https://teamwork.uz/tasks"
 DOWORK_PROJECTS_URL = "https://dowork.uz/uz/projects"

@@ -118,20 +118,46 @@ async def scan_and_send(force=False):
     global sent_ids, _first_boot
     items = await fetch_all()
 
-    # FIX для Render ephemeral: если файл стерся (sent_ids пуст) —
-    # первый скан НЕ шлет ничего, а просто запоминает все найденное как "виденное"
-    # иначе после каждого рестарта будут дубли
-    if not force and _first_boot and len(sent_ids) == 0 and len(items) > 0:
+    # FIX для Render ephemeral: первый скан после сброса файла
+    # Старые заказы (>2ч) молча запоминаем, свежие (<=2ч) — шлем
+    # + защита от вечных повторов: parser уже фильтрует старше MAX_AGE_HOURS
+    if not force and _first_boot and len(sent_ids) == 0:
+        if len(items) == 0:
+            _first_boot = False
+            return 0
+        # есть свежие — разделим по возрасту dt
+        from datetime import timezone, timedelta
+        now = datetime.now(timezone.utc)
+        to_send = []
+        to_silent = []
         for it in items:
-            sent_ids.add(it["id"])
-        save_sent(sent_ids)
+            dt_str = it.get("dt")
+            try:
+                dt = datetime.fromisoformat(dt_str.replace("Z","+00:00")) if dt_str else None
+                if dt and dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                age_h = (now - dt).total_seconds()/3600 if dt else 999
+            except:
+                age_h = 999
+            # старше 2ч считаем старым (уже был в ленте до рестарта)
+            if age_h > 2:
+                to_silent.append(it)
+            else:
+                to_send.append(it)
+        if to_silent:
+            for it in to_silent:
+                sent_ids.add(it["id"])
+            save_sent(sent_ids)
+            print(f"[dedup] first boot - silently memorized {len(to_silent)} old ids")
+            try:
+                if to_silent:
+                    await send_msg(f"♻️ Бот перезапущен — запомнил <b>{len(to_silent)}</b> старых заказов как просмотренные. Новых в ленте: {len(to_send)}")
+            except: pass
         _first_boot = False
-        print(f"[dedup] first boot - silently memorized {len(items)} ids, not sending")
-        # уведомим админа один раз
-        try:
-            await send_msg(f"♻️ Бот перезапущен — запомнил <b>{len(items)}</b> существующих заказов как просмотренные. Новые заказы буду слать как обычно.")
-        except: pass
-        return 0
+        # продолжим отправкой только свежих (to_send), а не всех items
+        items = to_send
+        if not items:
+            return 0
 
     # если когда-то уже был хотя бы один id, снимаем флаг
     if _first_boot and len(sent_ids) > 0:

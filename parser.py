@@ -1,7 +1,8 @@
 import re
 import aiohttp
+from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
-from config import KEYWORDS, IGNORE_KEYWORDS
+from config import KEYWORDS, IGNORE_KEYWORDS, MAX_AGE_HOURS
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
@@ -41,7 +42,21 @@ async def fetch_teamwork_channel():
             # ссылка
             link_el = m.select_one("a.tgme_widget_message_date")
             link = link_el["href"] if link_el else f"https://t.me/s/teamwork_uz"
-            # дата — внутри time
+            # дата — внутри time (свежесть фильтр)
+            dt = None
+            time_el = m.select_one("time[datetime]")
+            if time_el and time_el.has_attr("datetime"):
+                try:
+                    dt_str = time_el["datetime"]
+                    # 2026-09-05T07:23:30+00:00
+                    dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    age_h = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+                    if age_h > MAX_AGE_HOURS:
+                        continue
+                except:
+                    dt = None
             # заголовок Mavzu
             mavzu = ""
             m2 = re.search(r"Mavzu:\s*(.+?)\s*Vazifa:", text)
@@ -55,7 +70,6 @@ async def fetch_teamwork_channel():
             # фильтр
             if not is_relevant(text):
                 continue
-            # игнор старых без цены? оставляем все релевантные
             results.append({
                 "id": f"tw_{num}",
                 "num": num,
@@ -63,7 +77,8 @@ async def fetch_teamwork_channel():
                 "text": text[:900],
                 "price": price,
                 "url": f"https://teamwork.uz/task/{num}",
-                "source": "teamwork"
+                "source": "teamwork",
+                "dt": dt.isoformat() if dt else None
             })
     except Exception as e:
         print(f"[parser] teamwork channel error: {e}")
@@ -117,6 +132,7 @@ async def fetch_dowork_projects():
 async def fetch_all():
     tw = await fetch_teamwork_channel()
     dw = await fetch_dowork_projects()
-    # мердж
+    # мердж + лог для дебага рестартов
     all_items = tw + dw
+    print(f"[parser] fetched tw={len(tw)} dw={len(dw)} total={len(all_items)} (MAX_AGE={MAX_AGE_HOURS}h)")
     return all_items

@@ -2,7 +2,7 @@ import re
 import aiohttp
 from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
-from config import KEYWORDS, IGNORE_KEYWORDS, MAX_AGE_HOURS
+from config import KEYWORDS, EXPAND_KEYWORDS, IGNORE_KEYWORDS, GAP_HINTS, MAX_AGE_HOURS
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
@@ -12,9 +12,39 @@ def is_relevant(text: str) -> bool:
         if ig in t:
             return False
     for kw in KEYWORDS:
+        if kw not in t:
+            continue
+        # не считаем telegram в контакте "Telegram @username" как релевантность
+        if kw == "telegram":
+            idx = t.find(kw)
+            # если после telegram в пределах 15 символов есть @ — это контакт, скипаем этот kw
+            snippet = t[idx: idx+30]
+            if "@" in snippet:
+                continue
         if kw in t:
             return True
     return False
+
+def is_expandable(text: str) -> bool:
+    t = text.lower()
+    for ig in IGNORE_KEYWORDS:
+        if ig in t:
+            return False
+    for kw in EXPAND_KEYWORDS:
+        if kw in t:
+            return True
+    return False
+
+def get_gap_hint(text: str) -> str:
+    t = text.lower()
+    hints = []
+    for kw, hint in GAP_HINTS.items():
+        if kw in t and hint not in hints:
+            hints.append(hint)
+    # fallback если expandable но hint не нашёлся
+    if not hints and is_expandable(text):
+        return "посмотреть ТЗ — рядом с твоим стеком"
+    return " + ".join(hints[:2]) if hints else ""
 
 async def fetch_teamwork_channel():
     """Парсит t.me/s/teamwork_uz — ищет Buyurtma №"""
@@ -67,9 +97,15 @@ async def fetch_teamwork_channel():
             p2 = re.search(r"Narxi:\s*([^\n]+)", text)
             if p2:
                 price = p2.group(1).strip()
-            # фильтр
-            if not is_relevant(text):
+            # фильтр — perfect vs expandable
+            rel = is_relevant(text)
+            exp = is_expandable(text)
+            if not rel and not exp:
                 continue
+            # для expand — помечаем что подучить
+            gap = get_gap_hint(text) if exp and not rel else ""
+            # для дорогих заказов (>10M) — даже старше 48ч показываем если expand/perfect
+            # (оставляем возрастной фильтр как есть, но лог покажет)
             results.append({
                 "id": f"tw_{num}",
                 "num": num,
@@ -78,7 +114,9 @@ async def fetch_teamwork_channel():
                 "price": price,
                 "url": f"https://teamwork.uz/task/{num}",
                 "source": "teamwork",
-                "dt": dt.isoformat() if dt else None
+                "dt": dt.isoformat() if dt else None,
+                "level": "perfect" if rel else "expandable",
+                "gap": gap
             })
     except Exception as e:
         print(f"[parser] teamwork channel error: {e}")
@@ -104,8 +142,11 @@ async def fetch_dowork_projects():
             # дедуп по href
             if any(r["url"] == full for r in results):
                 continue
-            if not is_relevant(title):
+            rel = is_relevant(title)
+            exp = is_expandable(title)
+            if not rel and not exp:
                 continue
+            gap = get_gap_hint(title) if exp and not rel else ""
             # цена рядом — ищем в родителе
             price = ""
             parent = a.parent
@@ -121,7 +162,9 @@ async def fetch_dowork_projects():
                 "text": title,
                 "price": price,
                 "url": full,
-                "source": "dowork"
+                "source": "dowork",
+                "level": "perfect" if rel else "expandable",
+                "gap": gap
             })
             if len(results) >= 8:
                 break

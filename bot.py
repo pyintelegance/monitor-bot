@@ -55,7 +55,7 @@ TPL_TEXT = (
 WELCOME = (
     "<b>Jahongir Monitor</b> - 24/7 freelance watcher\n\n"
     "Sources: t.me/teamwork_uz + teamwork.uz + dowork.uz\n"
-    "Filter: sayt, landing, bot, python\n"
+    "Filter: perfect (sayt, bot, python) + expandable (qr, payme, crm, pos)\n"
     f"Interval: {config.CHECK_INTERVAL//60} min\n\n"
     "Commands:\n"
     "/check - check now\n"
@@ -167,10 +167,18 @@ async def scan_and_send(force=False):
     for it in items:
         if not force and it["id"] in sent_ids:
             continue
+        level = it.get("level", "perfect")
+        gap = it.get("gap", "")
+        if level == "expandable":
+            prefix = "🟡 <b>Почти твое — можно взять, подучить:</b> " + (gap or "1-2 дня") + "\n"
+        else:
+            prefix = "🟢 <b>Твое:</b>\n"
         text = (
+            f"{prefix}"
             f"<b>{it['title']}</b>\n"
-            f"{it['price'] or 'Kelishilgan holda'}\n"
-            f"{it['source']} | <code>{it['id']}</code>\n\n"
+            f"{it['price'] or 'Kelishilgan holda'}"
+            f"{' | ' + gap if gap else ''}\n"
+            f"{it['source']} | <code>{it['id']}</code> | {level}\n\n"
             f"{it['text'][:500]}\n\n"
             f"{it['url']}"
         )

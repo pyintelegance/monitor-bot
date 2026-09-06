@@ -199,16 +199,24 @@ async def scheduler():
 
 async def health_server():
     from aiohttp import web
+    import subprocess
+    try:
+        ver = subprocess.check_output(["git","rev-parse","--short","HEAD"], timeout=2).decode().strip()
+    except:
+        ver = "unknown"
     async def handle(request):
         return web.Response(text="ok")
+    async def version(request):
+        return web.Response(text=f"ver:{ver} sent:{len(sent_ids)} first_boot:{_first_boot} max_age:{config.MAX_AGE_HOURS}h")
     app = web.Application()
     app.router.add_get("/", handle)
     app.router.add_get("/health", handle)
+    app.router.add_get("/version", version)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "10000")))
     await site.start()
-    print(f"[health] port {os.getenv('PORT','10000')}")
+    print(f"[health] port {os.getenv('PORT','10000')} ver={ver}")
     while True:
         await asyncio.sleep(3600)
 
